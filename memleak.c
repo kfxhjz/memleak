@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,12 +24,10 @@ void format_bytes(size_t bytes, char *output, size_t output_size) {
   // 根据大小选择合适的格式
   if (i == 0) {
     snprintf(output, output_size, "%d %s", (int)dblBytes, suffixes[i]);
-  } else if (dblBytes < 10.0) {
-    snprintf(output, output_size, "%.2f %s", dblBytes, suffixes[i]);
   } else if (dblBytes < 100.0) {
-    snprintf(output, output_size, "%.1f %s", dblBytes, suffixes[i]);
+    snprintf(output, output_size, "%.2f %s", dblBytes, suffixes[i]);
   } else {
-    snprintf(output, output_size, "%.0f %s", dblBytes, suffixes[i]);
+    snprintf(output, output_size, "%.1f %s", dblBytes, suffixes[i]);
   }
 
   return;
@@ -69,31 +68,50 @@ void print_usage(const char *program_name) {
   printf("Simulates a memory leak.\n");
   printf("\n");
   printf("OPTIONS:\n");
+  printf("  -i <size>    Block size to leak when init the program (default: 0B)\n");
+  printf("               Supports units: B, KB, MB, GB (e.g., 10MB, 1GB)\n");
   printf("  -b <size>    Block size to leak (default: 1KB)\n");
   printf("               Supports units: B, KB, MB, GB (e.g., 10MB, 1GB)\n");
-  printf("  -i <ms>      Interval between leaks in milliseconds (default: 1000)\n");
+  printf("  -t <ms>      Interval between leaks in milliseconds (default: 1000)\n");
   printf("  -c <count>   Number of blocks to leak before pausing (default: infinite)\n");
   printf("  -p <secs>    Pause after leaking <count> blocks for <secs> seconds (default: 0)\n");
   printf("  -h           Show this help message\n");
   printf("\n");
   printf("EXAMPLE:\n");
-  printf("  %s -b 1MB -i 2000    # Leak 1MB every 2 seconds\n", program_name);
-  printf("  %s -b 512KB -i 500    # Leak 512KB every 0.5 seconds\n", program_name);
+  printf("  %s -b 1MB -t 2000    # Leak 1MB every 2 seconds\n", program_name);
+  printf("  %s -b 512KB -t 500    # Leak 512KB every 0.5 seconds\n", program_name);
+}
+
+bool leak(size_t size) {
+  void *ptr = malloc(size);
+  if (!ptr) {
+    fprintf(stderr, "Failed to allocate memory\n");
+    return false;
+  }
+
+  // Touch the memory to ensure it's really allocated
+  memset(ptr, 0, size);
+
+  return true;
 }
 
 int main(int argc, char *argv[]) {
+  size_t start_size = 0;
   size_t block_size = 1024;
   int interval_ms = 1000;
   int count = -1;
   int pause_secs = 0;
 
   int opt;
-  while ((opt = getopt(argc, argv, "b:i:c:p:h")) != -1) {
+  while ((opt = getopt(argc, argv, "i:b:t:c:p:h")) != -1) {
     switch (opt) {
+    case 'i':
+      start_size = parse_size(optarg);
+      break;
     case 'b':
       block_size = parse_size(optarg);
       break;
-    case 'i':
+    case 't':
       interval_ms = atoi(optarg);
       break;
     case 'c':
@@ -110,9 +128,10 @@ int main(int argc, char *argv[]) {
   }
 
   char size_str[50];
-  format_bytes(block_size, size_str, sizeof(size_str));
-
   printf("Starting memory leak simulation:\n");
+  format_bytes(start_size, size_str, sizeof(size_str));
+  printf("  Init Block size: %s bytes\n", size_str);
+  format_bytes(block_size, size_str, sizeof(size_str));
   printf("  Block size: %s bytes\n", size_str);
   printf("  Interval: %d ms\n", interval_ms);
   if (count > 0) {
@@ -131,19 +150,33 @@ int main(int argc, char *argv[]) {
   size_t total_leaked = 0;
   char total_str[50];
 
+  if (start_size > 0) {
+    const size_t max_block_size = 1024 * 1024;
+    if (start_size > max_block_size) {
+      for (size_t i = 0; i < start_size / max_block_size; i++) {
+        leak(max_block_size);
+      }
+      size_t left = start_size % max_block_size;
+      if (left > 0) {
+        leak(left);
+      }
+    } else {
+      leak(start_size);
+    }
+    format_bytes(start_size, size_str, sizeof(size_str));
+    printf("Init leaked: %s\n", size_str);
+  }
+
   while (count < 0 || leaked_blocks < count) {
     // Allocate memory and intentionally don't free it (LEAK)
-    void *block = malloc(block_size);
-    if (block == NULL) {
-      fprintf(stderr, "Failed to allocate memory at block %ld\n", leaked_blocks);
+    bool leak_result = leak(block_size);
+    if (!leak_result) {
+      fprintf(stderr, "Failed to leak memory at block %ld\n", leaked_blocks);
       break;
     }
 
-    // Touch the memory to ensure it's really allocated
-    memset(block, 1, block_size);
-
     leaked_blocks++;
-    total_leaked = leaked_blocks * block_size;
+    total_leaked = leaked_blocks * block_size + start_size;
 
     format_bytes(total_leaked, total_str, sizeof(total_str));
     printf("Leaked block #%ld (%s total)\n", leaked_blocks, total_str);
